@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# bot.py - WiFiDog Auto MAC Scanner (Same Chat Auto Push)
+# bot.py - WiFiDog Auto MAC Scanner (Railway Compatible - No nmap)
 
 import asyncio
 import subprocess
@@ -53,7 +53,7 @@ def parse_portal_url(url: str) -> dict | None:
 
 
 # ─────────────────────────────────────────
-#  Network Helpers
+#  Network Helpers (Pure Python + System Tools, NO nmap)
 # ─────────────────────────────────────────
 
 def get_subnet_from_gw(gw_address: str) -> str:
@@ -61,49 +61,93 @@ def get_subnet_from_gw(gw_address: str) -> str:
     return f"{match.group(1)}.0/24" if match else "192.168.10.0/24"
 
 
-def arp_scan(subnet: str) -> list[dict]:
-    devices = []
+def get_mac_from_ip(ip: str) -> str:
+    """Get MAC address from ARP table using system commands (no root needed)."""
+    mac = "N/A"
+    try:
+        # Method 1: Using 'ip neigh' (most reliable)
+        result = subprocess.check_output(
+            f"ip neigh show {ip} 2>/dev/null",
+            shell=True,
+            timeout=2
+        ).decode()
+        # Example: 192.168.1.1 dev eth0 lladdr aa:bb:cc:dd:ee:ff REACHABLE
+        parts = result.split()
+        for idx, part in enumerate(parts):
+            if part == "lladdr" and idx + 1 < len(parts):
+                mac = parts[idx + 1]
+                return mac
+    except:
+        pass
+
+    try:
+        # Method 2: Reading /proc/net/arp (Linux standard)
+        with open("/proc/net/arp", "r") as f:
+            for line in f.readlines()[1:]:  # skip header
+                fields = line.split()
+                if len(fields) >= 4 and fields[0] == ip:
+                    mac = fields[3]
+                    return mac
+    except:
+        pass
+
+    return mac
+
+
+def ping_ip(ip: str) -> bool:
+    """Ping an IP and return True if alive."""
+    try:
+        subprocess.check_output(
+            f"ping -c 1 -W 1 {ip} 2>/dev/null",
+            shell=True,
+            timeout=2
+        )
+        return True
+    except:
+        return False
+
+
+def get_hostname(ip: str) -> str:
     try:
         result = subprocess.check_output(
-            f"nmap -sn {subnet} -T4 2>/dev/null",
-            shell=True
+            f"host {ip} 2>/dev/null",
+            shell=True,
+            timeout=2
         ).decode()
+        m = re.search(r"domain name pointer (.+)\.", result)
+        return m.group(1) if m else "Unknown"
+    except:
+        return "Unknown"
 
-        blocks = result.split("Nmap scan report for ")
-        for block in blocks[1:]:
-            lines   = block.strip().split("\n")
-            ip_line = lines[0].strip()
 
-            ip = ""
-            hostname = ""
+def arp_scan(subnet: str) -> list[dict]:
+    """Scan subnet using ping sweep + ARP lookup (no nmap)."""
+    devices = []
+    prefix = ".".join(subnet.split(".")[:3])  # e.g., 192.168.1
 
-            if "(" in ip_line:
-                h = re.match(r"^(.+?)\s*\((\d+\.\d+\.\d+\.\d+)\)", ip_line)
-                if h:
-                    hostname = h.group(1).strip()
-                    ip       = h.group(2)
-            else:
-                m = re.search(r"(\d+\.\d+\.\d+\.\d+)", ip_line)
-                ip = m.group(1) if m else ""
+    for i in range(1, 255):
+        ip = f"{prefix}.{i}"
 
-            mac    = "N/A"
-            vendor = "Unknown"
-            for line in lines:
-                mm = re.search(r"MAC Address: ([0-9A-F:]{17})\s*\((.+?)\)", line)
-                if mm:
-                    mac    = mm.group(1)
-                    vendor = mm.group(2)
+        # Ping check
+        if not ping_ip(ip):
+            continue
 
-            if ip:
-                devices.append({
-                    "ip":       ip,
-                    "mac":      mac,
-                    "hostname": hostname or "Unknown",
-                    "vendor":   vendor,
-                    "time":     datetime.now().strftime("%H:%M:%S"),
-                })
-    except Exception as e:
-        logging.error(f"ARP scan error: {e}")
+        # Get MAC
+        mac = get_mac_from_ip(ip)
+        if mac == "N/A":
+            continue
+
+        # Get hostname (optional)
+        hostname = get_hostname(ip)
+
+        devices.append({
+            "ip":       ip,
+            "mac":      mac,
+            "hostname": hostname,
+            "vendor":   "N/A",  # Vendor lookup needs online API, skip to avoid slowness
+            "time":     datetime.now().strftime("%H:%M:%S"),
+        })
+
     return devices
 
 
@@ -111,7 +155,8 @@ def ping_check(ip: str) -> float:
     try:
         result = subprocess.check_output(
             f"ping -c 1 -W 1 {ip} 2>/dev/null",
-            shell=True
+            shell=True,
+            timeout=2
         ).decode()
         m = re.search(r"time=(\d+\.?\d*)\s*ms", result)
         return float(m.group(1)) if m else -1
@@ -152,18 +197,18 @@ async def auto_scan_from_url(portal_info: dict, update: Update):
         f"📡 Subnet: `{subnet}`\n"
         f"🔒 Status: {net_status}\n"
         f"{'─'*28}\n"
-        f"⏳ Auto scan စတင်နေသည်...",
+        f"⏳ Auto scan စတင်နေသည်... (စက္ကန့် ၃၀-၆၀ ကြာနိုင်သည်)",
         parse_mode="Markdown"
     )
 
-    await asyncio.sleep(0.8)
+    await asyncio.sleep(1)
 
-    # ── Step 2: ARP Scan ──
+    # ── Step 2: ARP Scan (Ping Sweep) ──
     await msg.edit_text(
         f"🔍 *Scanning...*\n"
         f"📡 `{subnet}`\n\n"
         f"`██░░░░░░░░` 20%\n"
-        f"📡 ARP Scan လုပ်နေသည်...",
+        f"📡 Ping ထိုးပြီး ARP ရှာနေသည်...",
         parse_mode="Markdown"
     )
 
@@ -173,18 +218,18 @@ async def auto_scan_from_url(portal_info: dict, update: Update):
     await msg.edit_text(
         f"🔍 *Scanning...*\n"
         f"📡 `{subnet}`\n\n"
-        f"`████░░░░░░` 40%\n"
+        f"`████░░░░░░` 50%\n"
         f"🖥 Device `{len(devices)}` ခု တွေ့ရှိသည်\n"
         f"⚡ Internet စစ်ဆေးနေသည်...",
         parse_mode="Markdown"
     )
 
-    # ── Step 3: Ping check ──
+    # ── Step 3: Ping check for internet ──
     online_devices = []
     total          = len(devices)
 
     for i, dev in enumerate(devices):
-        pct = 40 + int(((i + 1) / max(total, 1)) * 55)
+        pct = 50 + int(((i + 1) / max(total, 1)) * 45)
         bar = "█" * (pct // 10) + "░" * (10 - pct // 10)
 
         await msg.edit_text(
@@ -204,7 +249,7 @@ async def auto_scan_from_url(portal_info: dict, update: Update):
             online_devices.append(dev)
             found_macs[dev["mac"]] = dev
 
-        await asyncio.sleep(0.1)
+        await asyncio.sleep(0.05)
 
     scan_running = False
 
@@ -226,8 +271,7 @@ async def auto_scan_from_url(portal_info: dict, update: Update):
         await update.message.reply_text(
             "📭 *Internet ရနေသော Device မတွေ့ပါ*\n\n"
             "• Bot ကို same network ထဲ run ရမည်\n"
-            "• `nmap` install ဖြစ်ရမည်\n"
-            "• `sudo` ဖြင့် run ရမည်",
+            "• Network Gateway IP မှန်ကန်စွာ သွင်းထားပါ",
             parse_mode="Markdown"
         )
         return
@@ -235,7 +279,6 @@ async def auto_scan_from_url(portal_info: dict, update: Update):
     # ── Step 6: Success MAC တစ်ခုချင်းစီ တစ်ခါတည်းပို့ ──
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    # Header message တစ်ခုဆင်ပြောင်းသော
     await update.message.reply_text(
         f"🚨 *Internet ရနေသော MAC — {len(online_devices)} ခု*\n"
         f"{'─'*30}\n"
@@ -246,7 +289,6 @@ async def auto_scan_from_url(portal_info: dict, update: Update):
         parse_mode="Markdown"
     )
 
-    # MAC တစ်ခုချင်းစီကို သပ်သပ် message ပို့သည်
     for i, dev in enumerate(online_devices, 1):
         lat = dev["latency"]
 
@@ -268,16 +310,14 @@ async def auto_scan_from_url(portal_info: dict, update: Update):
             f"{'─'*25}\n"
             f"🔵 MAC:     `{dev['mac']}`\n"
             f"🌐 IP:      `{dev['ip']}`\n"
-            f"🏷  Vendor:  `{dev['vendor']}`\n"
             f"🖥 Host:    `{dev['hostname']}`\n"
             f"📶 Speed:   {speed_icon} `{lat}ms` ({speed_label})\n"
             f"🕐 Time:    `{dev['time']}`"
         )
 
         await update.message.reply_text(mac_msg, parse_mode="Markdown")
-        await asyncio.sleep(0.3)   # flood limit ရှောင်ရန်
+        await asyncio.sleep(0.3)
 
-    # Footer
     await update.message.reply_text(
         f"{'─'*30}\n"
         f"💾 `/saved` — MAC list ပြန်ကြည့်ရန်\n"
@@ -344,7 +384,7 @@ async def cmd_saved(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     for i, (mac, dev) in enumerate(found_macs.items(), 1):
         lines.append(
             f"\n*{i}.* `{mac}`\n"
-            f"   🌐 `{dev['ip']}` | 🏷 `{dev['vendor']}`\n"
+            f"   🌐 `{dev['ip']}`\n"
             f"   📶 `{dev['latency']}ms` | 🕐 `{dev['time']}`"
         )
     lines.append(f"\n{'─'*28}")
@@ -384,7 +424,7 @@ def main():
     app.add_handler(CommandHandler("clear",  cmd_clear))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
-    print("🤖 Bot စတင်နေပါပြီ...")
+    print("🤖 Bot စတင်နေပါပြီ... (Railway Compatible)")
     app.run_polling()
 
 
