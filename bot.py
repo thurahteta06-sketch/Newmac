@@ -36,7 +36,7 @@ limited_messages = {}
 
 session    = None
 _connector = None
-CONCURRENCY  = 500
+CONCURRENCY  = 30
 _voucher_sem = None
 _start_time  = time.monotonic()
 
